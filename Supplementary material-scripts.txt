@@ -1,0 +1,509 @@
+import pandas as pd
+import matplotlib.pyplot as plt
+from statsmodels.graphics.tsaplots import plot_acf
+from statsmodels.graphics.tsaplots import plot_pacf
+from statsmodels.tsa.arima_model import ARIMA
+from sklearn.metrics import mean_squared_error
+from sklearn.ensemble import RandomForestRegressor
+import numpy as np
+from sklearn import svm
+from sklearn import tree
+from sklearn.model_selection import KFold
+from sklearn.metrics import mean_squared_error 
+import lightgbm as lgb
+from xgboost import XGBRegressor
+
+plt.rcParams['font.sans-serif'] = ['SimHei'] 
+plt.rcParams['axes.unicode_minus'] = False  
+
+def get_data(file_name, start_date, end_date):
+    all_data = pd.read_excel(file_name, index_col='Date')
+    data = all_data.loc[start_date:end_date]
+    return data
+
+def plot_series(data):
+    data.plot()
+    plt.show()
+
+def get_single_data(data, cate):
+    return data[cate]
+
+#ARIMA Model
+def my_arima(data, name):
+    d_data = data.diff().dropna()
+    d_data.columns = ['First Difference']
+ 
+    p = 0
+    q = 0
+    model = ARIMA(data[0:-5], (p, 1, q)).fit()
+    yp = model.forecast(5) 
+    res = list(yp[0])
+    print('ARIMA result：', res)
+
+    really_res = list(data[-5:])
+    print('Actual result：', really_res)
+
+    mse = mean_squared_error(res, really_res)
+    rmse = mse ** 0.5
+    mape= (np.sum(np.abs((np.array(res) - np.array(really_res)) / np.array(really_res)))) * 100 / len(really_res)
+    print('ARIMA rmse：', rmse)
+    print('ARIMA mape：', mape)
+    import time
+    # time.sleep(10)
+    res_df = pd.DataFrame(data)
+    res_df[name + 'Prediction Price'] = list(data[0:-5])+res
+
+    col_order = [name + 'Prediction Price', name + 'Real Price']
+    res_df = res_df[col_order]
+
+    res_df.plot()
+    plt.legend()
+
+    return res, really_res, rmse, mape
+
+def series_to_supervised(values, n_in):
+    values = list(values)
+    x = []
+    y = []
+    for i in range(len(values)-n_in):
+        x.append(values[i:i+n_in])
+        y.append(values[i+n_in])
+
+    return np.array(x), np.array(y)
+
+#SVR
+def my_svm(data, name, n_in):
+   
+    values = data.values.astype('float32')
+
+    x, y = series_to_supervised(values, n_in)
+
+    # c_list= [0.01, 0.1, 1, 10, 100, 1000]
+    c_list= [0.1, 1, 10, 100]
+    gamma_list = [0.1, 1, 10]
+    para_res = []
+
+    for c in c_list:
+        for gamma in gamma_list:
+            kf = KFold(n_splits=10)
+            for train_index, test_index in kf.split(x):
+                X_train_cro, X_test_cro = x[train_index], x[test_index]
+                y_train_cro, y_test_cro = y[train_index], y[test_index]
+
+                svr_model = svm.SVR(kernel='rbf', gamma=gamma, C=c)
+                svr_model.fit(X_train_cro, y_train_cro)
+                res = svr_model.predict(X_test_cro)
+                mse_res = mean_squared_error(res, y_test_cro)
+
+                para_res.append((c, gamma, mse_res))
+                
+
+    good_para = min(para_res, key=lambda x: x[2])
+    print('SVR Paremeter：',good_para)
+
+    c = good_para[0]
+    gamma = good_para[1]
+
+    svr_model_finally = svm.SVR(kernel='rbf', gamma=gamma, C=c)
+    svr_model_finally.fit(x[0:-5], y[0:-5])
+    res_finally = svr_model_finally.predict(x[-5:])
+    mse_res = mean_squared_error(res_finally, y[-5:])
+
+    rmse = mse_res ** 0.5
+    mape= (np.sum(np.abs((res_finally - y[-5:]) / y[-5:]))) * 100 / len(y[-5:])
+
+    print('SVR Prediction ：', res_finally)
+    print('SVR real：', y[-5:])
+    print('SVR rmse：', rmse)
+    print('SVR mape：', mape)
+
+    res_df = pd.DataFrame(data)
+    res_df[name + 'Prediction Price'] = list(data[0:-5]) + list(res_finally)
+
+    col_order = [name + 'Prediction Price', name + 'Real Price']
+    res_df = res_df[col_order]
+
+    res_df.plot()
+    plt.legend()
+    return list(res_finally), y[-5:], rmse, mape
+
+#DT
+def my_dt(data, name, n_in):
+    # print(data.head())
+    values = data.values.astype('float32')
+    # print(len(values))
+    # print(values)
+
+    x, y = series_to_supervised(values, n_in)
+
+    # X_train, X_test, y_train, y_test = \
+    #     train_test_split(x, y, test_size=0.2, random_state=21)
+
+    min_samples_split_list= list(range(2, 10))
+    min_samples_leaf_list = list(range(1, 10))
+    para_res = []
+ 
+    for min_samples_split in min_samples_split_list:
+        for min_samples_leaf in min_samples_leaf_list:
+            kf = KFold(n_splits=10)
+            for train_index, test_index in kf.split(x):
+                X_train_cro, X_test_cro = x[train_index], x[test_index]
+                y_train_cro, y_test_cro = y[train_index], y[test_index]
+
+                tree_model = tree.DecisionTreeRegressor(min_samples_split=min_samples_split,min_samples_leaf=min_samples_leaf)
+                tree_model.fit(X_train_cro, y_train_cro)
+                res = tree_model.predict(X_test_cro)
+                mse_res = mean_squared_error(res, y_test_cro)
+
+                para_res.append((min_samples_split, min_samples_leaf, mse_res))
+                # print(c, gamma, mse_res)
+    good_para = min(para_res, key=lambda x: x[2])
+    print('DT Paremeter：',good_para)
+
+    min_samples_split = good_para[0]
+    min_samples_leaf = good_para[1]
+
+    tree_model_finally = tree.DecisionTreeRegressor(min_samples_split=min_samples_split,min_samples_leaf=min_samples_leaf)
+    tree_model_finally.fit(x[0:-5], y[0:-5])
+    res_finally = tree_model_finally.predict(x[-5:])
+    mse_res = mean_squared_error(res_finally, y[-5:])
+
+    rmse = mse_res ** 0.5
+    mape = (np.sum(np.abs((res_finally - y[-5:]) / y[-5:]))) * 100 / len(y[-5:])
+
+    print('DT Prediction：', res_finally)
+    print('DT Real：', y[-5:])
+    print('DT RMSE：', rmse)
+    print('DT mape：', mape)
+
+    res_df = pd.DataFrame(data)
+    res_df[name + 'Prediction Price'] = list(data[0:-5]) + list(res_finally)
+
+    col_order = [name + 'Prediction Price', name + 'Real Price']
+    res_df = res_df[col_order]
+
+    res_df.plot()
+    plt.legend()
+    return list(res_finally), y[-5:], rmse, mape
+
+#RF
+def my_rf(data, name, n_in):
+    # print(data.head())
+    values = data.values.astype('float32')
+    # print(len(values))
+    # print(values)
+    x, y = series_to_supervised(values, n_in)
+    # X_train, X_test, y_train, y_test = \
+    #     train_test_split(x, y, test_size=0.2, random_state=21)
+    min_samples_leaf_list = list(range(2, 8, 2))
+    n_estimators_list = list(range(50, 200, 30))
+    min_samples_split_list = list(range(2, 10, 2))
+
+    para_res = []
+    # for min_samples_leaf in min_samples_leaf_list:
+    #     for n_estimators in n_estimators_list:
+    #         for min_samples_split in min_samples_split_list:
+    #             kf = KFold(n_splits=10)
+    #             for train_index, test_index in kf.split(x):
+    #                 X_train_cro, X_test_cro = x[train_index], x[test_index]
+    #                 y_train_cro, y_test_cro = y[train_index], y[test_index]
+    #                 rf_model = RandomForestRegressor(min_samples_leaf=min_samples_leaf, n_estimators=n_estimators,
+    #                                       min_samples_split=min_samples_split, random_state=21)
+    #                 rf_model.fit(X_train_cro, y_train_cro)
+    #                 res = rf_model.predict(X_test_cro)
+    #                 mse_res = mean_squared_error(res, y_test_cro)
+    #
+    #                 para_res.append((min_samples_leaf, n_estimators, min_samples_split, mse_res))
+    #                 print(min_samples_leaf, n_estimators, min_samples_split, mse_res)
+    # good_para = min(para_res, key=lambda x: x[3])
+    # print('RF Paremter：',good_para)
+
+    # min_samples_leaf = good_para[0]
+    # n_estimators = good_para[1]
+    # min_samples_split = good_para[2]
+    min_samples_leaf = 5
+    n_estimators = 60
+    min_samples_split = 5
+
+    rf_model_finally = RandomForestRegressor(min_samples_leaf=min_samples_leaf, n_estimators=n_estimators,
+                                          min_samples_split=min_samples_split, random_state=21)
+    rf_model_finally.fit(x[0:-5], y[0:-5])
+    res_finally = rf_model_finally.predict(x[-5:])
+    mse_res = mean_squared_error(res_finally, y[-5:])
+
+    rmse = mse_res ** 0.5
+    mape = (np.sum(np.abs((res_finally - y[-5:]) / y[-5:]))) * 100 / len(y[-5:])
+
+    print('RF Prediction：', res_finally)
+    print('RF real：', y[-5:])
+    print('RF RMSE：', rmse)
+    print('RF mape：', mape)
+
+    res_df = pd.DataFrame(data)
+    res_df[name + 'Prediction Price'] = list(data[0:-5]) + list(res_finally)
+
+    col_order = [name + 'Prediction Price', name + 'Real  Price']
+    res_df = res_df[col_order]
+
+    res_df.plot()
+    plt.legend()
+    return list(res_finally), y[-5:], rmse, mape
+
+
+#xgboost
+
+def my_xgboost(data, name, n_in):
+    values = data.values.astype('float32')
+    # print(len(values))
+    # print(values)
+
+    x, y = series_to_supervised(values, n_in)
+    # X_train, X_test, y_train, y_test = \
+    #     train_test_split(x, y, test_size=0.2, random_state=21)
+
+    learning_rate_list = [0.01, 0.02, 0.1, 0.15]
+    max_depth_list = list(range(3, 10, 2))
+    n_estimators_list = list(range(50, 200, 30))
+
+    para_res = []
+    for learning_rate in learning_rate_list:
+            for n_estimators in n_estimators_list:
+                for max_depth in max_depth_list:
+                    kf = KFold(n_splits=10)
+                    for train_index, test_index in kf.split(x):
+                        X_train_cro, X_test_cro = x[train_index], x[test_index]
+                        y_train_cro, y_test_cro = y[train_index], y[test_index]
+                        xg_model = XGBRegressor(max_depth=max_depth, learning_rate=learning_rate, n_estimators=n_estimators,
+                                                silent=True, objective='reg:gamma')
+                        xg_model.fit(X_train_cro, y_train_cro)
+                        res = xg_model.predict(X_test_cro)
+                        mse_res = mean_squared_error(res, y_test_cro)
+
+                        para_res.append((learning_rate, n_estimators, max_depth, mse_res))
+                        # print(c, gamma, mse_res)
+    good_para = min(para_res, key=lambda x: x[3])
+    print('Xgboost Paremeter：',good_para)
+
+    learning_rate = good_para[0]
+    n_estimators = good_para[1]
+    max_depth = good_para[2]
+
+    # learning_rate = 0.1
+    # n_estimators = 150
+    # max_depth = 5
+
+    xg_model_finally = XGBRegressor(max_depth=max_depth, learning_rate=learning_rate,
+                                             n_estimators=n_estimators,silent=True, objective='reg:gamma')
+    xg_model_finally.fit(x[0:-5], y[0:-5])
+    res_finally = xg_model_finally.predict(x[-5:])
+    mse_res = mean_squared_error(res_finally, y[-5:])
+
+    rmse = mse_res ** 0.5
+    mape = (np.sum(np.abs((res_finally - y[-5:]) / y[-5:]))) * 100 / len(y[-5:])
+
+    print('Xgboost Prediction：', res_finally)
+    print('Xgboost real：', y[-5:])
+    print('Xgboost RMSE：', rmse)
+    print('Xgboost mape：', mape)
+
+    res_df = pd.DataFrame(data)
+    res_df[name + 'Prediction Price'] = list(data[0:-5]) + list(res_finally)
+
+    col_order = [name + 'Prediction Price', name + 'Real Price']
+    res_df = res_df[col_order]
+
+    res_df.plot()
+    plt.legend()
+    return list(res_finally), y[-5:], rmse, mape
+
+
+# LightGBM
+def my_lgb(data, name, n_in):
+    # print(data.head())
+    values = data.values.astype('float32')
+    # print(len(values))
+    # print(values)
+
+    x, y = series_to_supervised(values, n_in)
+    # X_train, X_test, y_train, y_test = \
+    #     train_test_split(x, y, test_size=0.2, random_state=21)
+
+    learning_rate_list = [0.01, 0.02, 0.05, 0.1, 0.15]
+    n_estimators_list = [50,100,150]
+    learning_rate_para_res = []
+    
+    for learning_rate in learning_rate_list:
+        for n_estimators in n_estimators_list:
+            kf = KFold(n_splits=10)
+            for train_index, test_index in kf.split(x):
+                X_train_cro, X_test_cro = x[train_index], x[test_index]
+                y_train_cro, y_test_cro = y[train_index], y[test_index]
+
+                lgb_model1 = lgb.LGBMRegressor(objective='regression',num_leaves=50,
+                                  learning_rate=learning_rate, n_estimators=n_estimators, max_depth=6,
+                                  metric='rmse', bagging_fraction = 0.8,feature_fraction = 0.8)
+
+                lgb_model1.fit(X_train_cro, y_train_cro)
+                res = lgb_model1.predict(X_test_cro)
+                mse_res = mean_squared_error(res, y_test_cro)
+
+                learning_rate_para_res.append((learning_rate, n_estimators, mse_res))
+    good_para1 = min(learning_rate_para_res, key=lambda x: x[2])
+    print('LGB Paremeter：',good_para1)
+
+    learning_rate = good_para1[0]
+    n_estimators =  good_para1[1]
+
+    max_depth_list = list(range(3, 10, 2))
+
+    num_leaves_list = list(range(30, 150, 20))
+
+    para_res2 = []
+    for max_depth in max_depth_list:
+        for num_leaves in num_leaves_list:
+            kf = KFold(n_splits=10)
+            for train_index, test_index in kf.split(x):
+                X_train_cro, X_test_cro = x[train_index], x[test_index]
+                y_train_cro, y_test_cro = y[train_index], y[test_index]
+
+                lgb_model2 = lgb.LGBMRegressor(objective='regression', num_leaves=num_leaves,
+                                               learning_rate=learning_rate, n_estimators=n_estimators, max_depth=max_depth,
+                                               metric='rmse', bagging_fraction=0.8, feature_fraction=0.8)
+                lgb_model2.fit(X_train_cro, y_train_cro)
+                res = lgb_model2.predict(X_test_cro)
+                mse_res = mean_squared_error(res, y_test_cro)
+
+                para_res2.append((max_depth, num_leaves, mse_res))
+                # print(c, gamma, mse_res)
+    good_para2 = min(para_res2, key=lambda x: x[2])
+    print('LGB的max_depth,num_leaves Paremeter：', good_para2)
+
+    max_depth = good_para2[0]
+    num_leaves = good_para2[1]
+
+    para_res3 = []
+    min_child_samples_list = [18, 19, 20, 21, 22]
+    min_child_weight_list = [0.001, 0.002]
+
+    feature_fraction_list = [0.5, 0.6, 0.7, 0.8, 0.9]
+    bagging_fraction_list = [0.6, 0.7, 0.8, 0.9, 1.0]
+
+    for min_child_samples in min_child_samples_list:
+        for min_child_weight in min_child_weight_list:
+            for feature_fraction in feature_fraction_list:
+                for bagging_fraction in bagging_fraction_list:
+                    kf = KFold(n_splits=10)
+                    for train_index, test_index in kf.split(x):
+                        X_train_cro, X_test_cro = x[train_index], x[test_index]
+                        y_train_cro, y_test_cro = y[train_index], y[test_index]
+
+                        lgb_model3 = lgb.LGBMRegressor(objective='regression', num_leaves=num_leaves,
+                                                       learning_rate=learning_rate, n_estimators=n_estimators, max_depth=max_depth,
+                                                       min_child_samples=min_child_samples,min_child_weight=min_child_weight,
+                                                       metric='rmse', bagging_fraction=bagging_fraction, feature_fraction=feature_fraction)
+                        lgb_model3.fit(X_train_cro, y_train_cro)
+                        res = lgb_model3.predict(X_test_cro)
+                        mse_res = mean_squared_error(res, y_test_cro)
+
+                        para_res3.append((min_child_samples, min_child_weight, feature_fraction,
+                                          bagging_fraction, mse_res))
+                        # print(c, gamma, mse_res)
+    good_para3 = min(para_res3, key=lambda x: x[4])
+    print('LGB other Paremeters：', good_para3)
+
+    min_child_samples = good_para3[0]
+    min_child_weight = good_para3[1]
+    feature_fraction = good_para3[2]
+    bagging_fraction = good_para3[3]
+
+    lgb_model_finally = lgb.LGBMRegressor(objective='regression', num_leaves=num_leaves,
+                                   learning_rate=learning_rate, n_estimators=n_estimators, max_depth=max_depth,
+                                   min_child_samples=min_child_samples, min_child_weight=min_child_weight,
+                                   metric='rmse', bagging_fraction=bagging_fraction, feature_fraction=feature_fraction)
+    lgb_model_finally.fit(x[0:-5], y[0:-5])
+    res_finally = lgb_model_finally.predict(x[-5:])
+
+    mse_res = mean_squared_error(res_finally, y[-5:])
+
+    rmse = mse_res ** 0.5
+    mape = (np.sum(np.abs((res_finally - y[-5:]) / y[-5:]))) * 100 / len(y[-5:])
+
+    print('LGB Prediction：', res_finally)
+    print('LGB real：', y[-5:])
+    print('LGB RMSE：', rmse)
+    print('LGB mape：', mape)
+
+    res_df = pd.DataFrame(data)
+    res_df[name + 'Prediction Price'] = list(data[0:-5]) + list(res_finally)
+
+    col_order = [name + 'Prediction Price', name + 'Real Price']
+    res_df = res_df[col_order]
+
+    res_df.plot()
+    plt.legend()
+    # plt.show()
+    return list(res_finally), y[-5:], rmse, mape
+
+if __name__ == '__main__':
+    file_name = 'E:/Data for this work.xlsx'
+
+    start_date = '2019-04-01'
+    end_date = '2019-06-30'
+    data = get_data(file_name, start_date, end_date)
+    # print(data.head())
+
+    # plot_series(data)
+    name = 'crucian carp'
+    cate = name + 'Real Price'
+    data = get_single_data(data, cate)
+
+
+    n_in = 7
+    #arima
+    arima_pre, arima_true, arima_rmse, arima_mape = my_arima(data, name)
+    #svm
+    svm_pre, svm_true, svm_rmse, svm_mape = my_svm(data, name, n_in)
+    #DT
+    dt_pre, dt_true, dt_rmse, dt_mape = my_dt(data, name, n_in)
+    # RF
+    rf_pre, rf_true, rf_rmse, rf_mape = my_rf(data, name, n_in)
+    #Xgboost
+    xg_pre, xg_true, xg_rmse, xg_mape = my_xgboost(data, name, n_in)
+    # LightGBM
+    lgb_pre, lgb_true, lgb_rmse, lgb_mape = my_lgb(data, name, n_in)
+
+    # print('-------------------------Final Results-------------------------')
+    # print('ARIMA Prediction', arima_pre)
+    # print('ARIMA real', arima_true)
+    # print('ARIMA RMSE', arima_rmse)
+    # print('ARIMA MAPE', arima_mape)
+   
+ # print('*'*40)
+    # print('SVR Prediction', svm_pre)
+    # print('SVR real', svm_true)
+    # print('SVR RMSE', svm_rmse)
+    # print('SVR MAPE', arima_mape)
+
+    # print('*' * 40)
+    # print('DT Prediction', dt_pre)
+    # print('DT real', dt_true)
+    # print('DT RMSE', dt_rmse)
+    # print('DT MAPE', dt_rmse)
+    
+print('*' * 40)
+    print('RF Prediction', rf_pre)
+    print('RF real', rf_true)
+    print('RF RMSE', rf_rmse)
+    print('RF MAPE', rf_mape)
+
+    print('*' * 40)
+    print('Xgboost Prediction', xg_pre)
+    print('Xgboost real', xg_true)
+    print('Xgboost RMSE', xg_rmse)
+    print('Xgboost MAPE', xg_mape)
+
+    #print('*' * 40)
+    #print('LGB Prediction', lgb_pre)
+    #print('LGB real', lgb_true)
+    #print('LGB RMSE', lgb_rmse)
+   #print('LGB RMSE', lgb_mape)
